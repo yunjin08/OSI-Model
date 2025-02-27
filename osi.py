@@ -26,11 +26,10 @@ class Layer:
         if data is None or data == b'':
             print(f"{self.__class__.__name__} received empty data, stopping propagation")
             return
-            
-        # Process the data only once
-        processed_data = self.process_incoming(data)
-        if processed_data and self.upper_layer:
-            self.upper_layer.receive_up(processed_data)
+        
+        # Pass directly to upper layer without reprocessing
+        if self.upper_layer:
+            self.upper_layer.receive_up(data)
 
     def process_outgoing(self, data):
         raise NotImplementedError
@@ -184,7 +183,7 @@ class PhysicalLayer(Layer):
                     # Process the frame
                     processed_data = self.process_incoming(frame)
                     if processed_data:
-                        # Pass the processed data up to the next layer
+                        # This will call our overridden method
                         self.receive_up(processed_data)
                     
                     # Remove the processed frame from buffer
