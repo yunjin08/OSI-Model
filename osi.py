@@ -26,6 +26,8 @@ class Layer:
         if data is None or data == b'':
             print(f"{self.__class__.__name__} received empty data, stopping propagation")
             return
+            
+        # Process the data only once
         processed_data = self.process_incoming(data)
         if processed_data and self.upper_layer:
             self.upper_layer.receive_up(processed_data)
@@ -136,46 +138,62 @@ class PhysicalLayer(Layer):
         
         while self.running.is_set():
             try:
-                data = conn.recv(1024)
-                if not data:
+                # Read data in chunks
+                chunk = conn.recv(1024)
+                if not chunk:
                     print("Connection closed")
                     break
                 
-                buffer.extend(data)
+                print(f"Received chunk: {chunk[:20]!r}...")
+                buffer.extend(chunk)
                 
                 # Process complete frames
-                while len(buffer) >= 3:  # Minimum frame size
-                    if buffer[0:1] != self.PREAMBLE:
-                        # Scan for next preamble
-                        next_preamble = buffer.find(self.PREAMBLE)
-                        if next_preamble == -1:
-                            buffer.clear()
-                            break
-                        buffer = buffer[next_preamble:]
-                        continue
+                while len(buffer) >= 3:  # Minimum frame size (preamble + length)
+                    # Look for preamble
+                    preamble_pos = buffer.find(self.PREAMBLE)
+                    if preamble_pos == -1:
+                        # No preamble found, clear buffer and wait for more data
+                        print("No preamble found in buffer, clearing")
+                        buffer.clear()
+                        break
+                    
+                    # Remove data before preamble if any
+                    if preamble_pos > 0:
+                        print(f"Discarding {preamble_pos} bytes before preamble")
+                        buffer = buffer[preamble_pos:]
+                    
+                    # Check if we have enough data to read the length
+                    if len(buffer) < 3:
+                        print("Buffer too small to read length, waiting for more data")
+                        break
                     
                     # Extract frame length
-                    if len(buffer) < 3:
-                        break
                     frame_length = struct.unpack('!H', buffer[1:3])[0]
                     total_length = frame_length + 3  # preamble + length + data
                     
+                    print(f"Found frame: preamble at 0, length={frame_length}, need={total_length} bytes")
+                    
                     # Check if we have the complete frame
                     if len(buffer) < total_length:
+                        print(f"Incomplete frame: have {len(buffer)}, need {total_length} bytes")
                         break
                     
+                    # Extract the complete frame
+                    frame = bytes(buffer[:total_length])  # Convert to bytes for consistency
+                    
                     # Process the frame
-                    frame = buffer[:total_length]
                     processed_data = self.process_incoming(frame)
                     if processed_data:
+                        # Pass the processed data up to the next layer
                         self.receive_up(processed_data)
                     
-                    # Remove processed frame from buffer
+                    # Remove the processed frame from buffer
                     buffer = buffer[total_length:]
+                    print(f"Removed frame from buffer, {len(buffer)} bytes remaining")
                     
             except Exception as e:
                 if self.running.is_set():
-                    print("Error in listening: ", e)
+                    print(f"Error in listening: {e}")
                 break
         
         self.cleanup()
@@ -189,11 +207,17 @@ class PhysicalLayer(Layer):
             # Process the data into a frame
             frame = self.process_outgoing(data)
             
-            if self.conn:
-                print(f"{self.__class__.__name__} sending data to server")
+            # Debug print the frame contents
+            print(f"Sending frame:")
+            print(f"  - Total size: {len(frame)}")
+            print(f"  - First 20 bytes: {frame[:20]!r}")
+            
+            # Send the frame in a single call to prevent fragmentation
+            if self.is_server:
+                print(f"{self.__class__.__name__} sending data to client")
                 self.conn.sendall(frame)
             else:
-                print(f"{self.__class__.__name__} sending data to client")
+                print(f"{self.__class__.__name__} sending data to server")
                 self.socket.sendall(frame)
                 
         except Exception as e:
@@ -210,13 +234,20 @@ class PhysicalLayer(Layer):
                 print("Warning: Data is not bytes or string, attempting to convert")
                 data = str(data).encode('utf-8')
             
-        # Calculate frame length (excluding preamble)
+        # Calculate frame length (excluding preamble and length field)
         length = len(data)
         length_bytes = struct.pack('!H', length)  # 2 bytes for length
         
         # Construct the frame: preamble + length + data
         frame = self.PREAMBLE + length_bytes + data
-        print(f"Physical frame created: preamble={self.PREAMBLE!r}, length={length}, total_size={len(frame)}")
+        
+        # Debug print frame details
+        print(f"Physical frame created:")
+        print(f"  - Preamble: 0x{self.PREAMBLE.hex()}")
+        print(f"  - Length: {length} (0x{length_bytes.hex()})")
+        print(f"  - Total size: {len(frame)}")
+        print(f"  - First 20 bytes: {frame[:20]!r}")
+        
         return frame
 
     def process_incoming(self, data):
@@ -225,13 +256,18 @@ class PhysicalLayer(Layer):
             print(f"Warning: Received non-bytes data: {type(data)}")
             return None
             
+        # Debug print the received data
+        print(f"Processing physical frame:")  # Updated debug message
+        print(f"  - Total size: {len(data)}")
+        print(f"  - First 20 bytes: {data[:20]!r}")
+            
         if len(data) < 3:  # Minimum frame size (1 byte preamble + 2 bytes length)
-            print(f"Frame too small: {len(data)} bytes")
+            print("Frame too small: minimum 3 bytes required")
             return None
             
         # Check preamble
         if data[0:1] != self.PREAMBLE:
-            print(f"Invalid preamble: {data[0:1]!r}, expected: {self.PREAMBLE!r}")
+            print(f"Invalid preamble: got 0x{data[0:1].hex()}, expected 0x{self.PREAMBLE.hex()}")
             return None
             
         # Extract frame length
@@ -244,17 +280,18 @@ class PhysicalLayer(Layer):
             return None
             
         # Extract and return the payload
-        payload = data[3:length+3]
-        print(f"Extracted payload size: {len(payload)}")
+        payload = data[3:3+length]  # Only extract the specified length
+        print(f"Extracted physical payload: size={len(payload)}, first 20 bytes={payload[:20]!r}")
         return payload
 
 class DataLinkLayer(Layer):
     """Layer 2: Data Link Layer
-    Handles MAC addressing and frame creation.
-    Implements error detection using Frame Check Sequence (FCS)."""
+    Handles MAC addressing and frame creation."""
     
     def __init__(self, src_mac, dst_mac):
         super().__init__()
+        if len(src_mac) != 6 or len(dst_mac) != 6:
+            raise ValueError("MAC addresses must be exactly 6 bytes")
         self.src_mac = src_mac  # 6-byte MAC address
         self.dst_mac = dst_mac  # 6-byte MAC address
 
@@ -268,11 +305,16 @@ class DataLinkLayer(Layer):
                 data = str(data).encode('utf-8')
                 
         # Add MAC addresses (12 bytes total)
-        header = struct.pack('!6s6s', self.src_mac, self.dst_mac)
+        header = self.src_mac + self.dst_mac
         # Add Frame Check Sequence (4 bytes)
         fcs = struct.pack('!I', self._calculate_fcs(header + data))
         frame = header + data + fcs
-        print(f"DataLink frame created: size={len(frame)}, fcs={self._calculate_fcs(header + data)}")
+        
+        # Debug print the frame contents
+        print(f"DataLink frame created: size={len(frame)}")
+        print(f"  - Source MAC: {self.src_mac.hex(':')}")
+        print(f"  - Dest MAC: {self.dst_mac.hex(':')}")
+        print(f"  - FCS: 0x{fcs.hex()}")
         return frame
 
     def process_incoming(self, data):
@@ -287,24 +329,35 @@ class DataLinkLayer(Layer):
         
         try:
             # Extract frame components
-            header = data[:12]
+            src_mac = data[:6]
+            dst_mac = data[6:12]
             payload = data[12:-4]
             fcs = data[-4:]
             
+            # Debug print the frame components
+            print(f"DataLink frame received:")
+            print(f"  - Source MAC: {src_mac.hex(':')}")
+            print(f"  - Dest MAC: {dst_mac.hex(':')}")
+            print(f"  - Payload size: {len(payload)}")
+            print(f"  - FCS: 0x{fcs.hex()}")
+            
             # Verify destination MAC
-            dst_mac = struct.unpack('!6s', header[6:12])[0]
             if dst_mac != self.dst_mac:
-                print(f"MAC address mismatch: got {dst_mac!r}, expected {self.dst_mac!r}")
+                print(f"MAC address mismatch:")
+                print(f"  - Received: {dst_mac.hex(':')}")
+                print(f"  - Expected: {self.dst_mac.hex(':')}")
                 return b''
                 
             # Verify FCS
             calculated_fcs = self._calculate_fcs(data[:-4])
             received_fcs = struct.unpack('!I', fcs)[0]
             if calculated_fcs != received_fcs:
-                print(f"FCS check failed: calculated={calculated_fcs}, received={received_fcs}")
+                print(f"FCS check failed:")
+                print(f"  - Calculated: 0x{calculated_fcs:08x}")
+                print(f"  - Received: 0x{received_fcs:08x}")
                 return b''
                 
-            print(f"DataLink frame verified: payload_size={len(payload)}")
+            print(f"DataLink frame verified successfully")
             return payload
             
         except struct.error as e:
@@ -484,7 +537,8 @@ class ApplicationLayer(Layer):
 def create_server():
     """Create and configure server-side layers"""
     physical = PhysicalLayer('localhost', 12345, is_server=True)
-    datalink = DataLinkLayer(b'\x11\x11\x11\x11\x11\x11', b'\x22\x22\x22\x22\x22\x22')
+    # Fix MAC addresses to use proper hex values
+    datalink = DataLinkLayer(b'\x11\x22\x33\x44\x55\x66', b'\x77\x88\x99\xaa\xbb\xcc')
     network = NetworkLayer(b'\x0a\x00\x00\x01', b'\x0a\x00\x00\x02')
     transport = TransportLayer()
     session = SessionLayer(1234)
@@ -510,7 +564,8 @@ def create_server():
 def create_client():
     """Create and configure client-side layers"""
     physical = PhysicalLayer('localhost', 12345, is_server=False)
-    datalink = DataLinkLayer(b'\x22\x22\x22\x22\x22\x22', b'\x11\x11\x11\x11\x11\x11')
+    # Fix MAC addresses to use proper hex values (reversed from server)
+    datalink = DataLinkLayer(b'\x77\x88\x99\xaa\xbb\xcc', b'\x11\x22\x33\x44\x55\x66')
     network = NetworkLayer(b'\x0a\x00\x00\x02', b'\x0a\x00\x00\x01')
     transport = TransportLayer()
     session = SessionLayer(1234)
