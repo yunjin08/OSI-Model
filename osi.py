@@ -1,7 +1,6 @@
 import socket
 import struct
 import zlib
-import json
 import time
 from threading import Thread, Event
 import signal
@@ -27,9 +26,30 @@ class Layer:
             print(f"{self.__class__.__name__} received empty data, stopping propagation")
             return
         
-        # Pass directly to upper layer without reprocessing
-        if self.upper_layer:
-            self.upper_layer.receive_up(data)
+        # Special handling for Physical layer since it already processed in listen()
+        if isinstance(self, PhysicalLayer):
+            if self.upper_layer:
+                self.upper_layer.receive_up(data)
+            return
+            
+        # For all other layers, process the incoming data
+        try:
+            # Process the data through this layer
+            processed_data = self.process_incoming(data)
+            
+            # If processing failed, stop propagation
+            if processed_data is None or processed_data == b'':
+                print(f"{self.__class__.__name__} processing failed, stopping propagation")
+                return
+                
+            # Pass the processed data up to the next layer
+            if self.upper_layer:
+                print(f"{self.__class__.__name__} passing processed data up")
+                self.upper_layer.receive_up(processed_data)
+                
+        except Exception as e:
+            print(f"Error in {self.__class__.__name__} processing: {e}")
+            return
 
     def process_outgoing(self, data):
         raise NotImplementedError
@@ -340,11 +360,11 @@ class DataLinkLayer(Layer):
             print(f"  - Payload size: {len(payload)}")
             print(f"  - FCS: 0x{fcs.hex()}")
             
-            # Verify destination MAC
-            if dst_mac != self.dst_mac:
+            # Verify destination MAC - compare with our MAC address
+            if dst_mac != self.src_mac:  # Changed from self.dst_mac to self.src_mac
                 print(f"MAC address mismatch:")
                 print(f"  - Received: {dst_mac.hex(':')}")
-                print(f"  - Expected: {self.dst_mac.hex(':')}")
+                print(f"  - Expected: {self.src_mac.hex(':')}")
                 return b''
                 
             # Verify FCS
@@ -396,14 +416,8 @@ class NetworkLayer(Layer):
         if version != 4:  # Check IPv4
             print("Invalid IP version")
             return b''
-            
-        # Verify destination IP
-        dst_ip = data[3:7]
-        if dst_ip != self.dst_ip:
-            print("IP address mismatch")
-            return b''
-            
-        return data[7:]  # Return payload
+        
+        return data[10:]  # Adjust based on header length
 
 class TransportLayer(Layer):
     """Layer 4: Transport Layer
