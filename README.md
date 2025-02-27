@@ -39,7 +39,7 @@ This project implements all seven layers of the OSI model:
 
 Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/yunjin08/OSI-Model
 cd osi-model
 ```
 
