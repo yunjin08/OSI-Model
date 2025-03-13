@@ -5,6 +5,48 @@ import time
 from threading import Thread, Event
 import signal
 import sys
+import random
+
+SERVER_MAC = None
+CLIENT_MAC = None
+SERVER_IP = None
+CLIENT_IP = None
+
+def generate_random_mac():
+    """Generate a random MAC address"""
+    mac = bytes([random.randint(0, 255) for _ in range(6)])
+    # Set locally administered bit
+    mac = bytes([mac[0] | 0x02]) + mac[1:]
+    return mac
+
+def generate_random_ip():
+    """Generate a random IP address in private network ranges"""
+    range_choice = random.randint(1, 3)
+    
+    if range_choice == 1:
+        return bytes([10, random.randint(0, 255), random.randint(0, 255), random.randint(1, 254)])
+    elif range_choice == 2:
+        return bytes([172, random.randint(16, 31), random.randint(0, 255), random.randint(1, 254)])
+    else:
+        return bytes([192, 168, random.randint(0, 255), random.randint(1, 254)])
+    
+def initialize_addresses():
+    """Initialize global MAC and IP addresses"""
+    global SERVER_MAC, CLIENT_MAC, SERVER_IP, CLIENT_IP
+    
+    # Generate random MAC addresses
+    SERVER_MAC = generate_random_mac()
+    CLIENT_MAC = generate_random_mac()
+    
+    # Generate random IP addresses
+    SERVER_IP = generate_random_ip()
+    CLIENT_IP = generate_random_ip()
+    
+    print("\nGenerated Addresses:")
+    print(f"Server MAC: {':'.join(f'{b:02x}' for b in SERVER_MAC)}")
+    print(f"Server IP: {'.'.join(str(b) for b in SERVER_IP)}")
+    print(f"Client MAC: {':'.join(f'{b:02x}' for b in CLIENT_MAC)}")
+    print(f"Client IP: {'.'.join(str(b) for b in CLIENT_IP)}")
 
 class Layer:
     """Base class for all OSI layers"""
@@ -402,12 +444,14 @@ class NetworkLayer(Layer):
         # IP header: version(4) + IHL(4) + TTL(8) + src_ip(32) + dst_ip(32)
         version_ihl = struct.pack('!B', (4 << 4) | 5)  # IPv4, IHL=5
         ttl = struct.pack('!B', self.ttl)
+        # Correct order: src_ip, then dst_ip
         header = version_ihl + ttl + self.src_ip + self.dst_ip
         return header + data
 
     def process_incoming(self, data):
         """Process incoming IP packet"""
-        if len(data) < 7:  # Minimum header size
+        if len(data) < 10:  # Minimum header size
+            print("IP packet too small")
             return b''
             
         # Extract and verify header
@@ -416,8 +460,25 @@ class NetworkLayer(Layer):
         if version != 4:  # Check IPv4
             print("Invalid IP version")
             return b''
+            
+        # Extract IP addresses in correct order
+        src_ip = data[2:6]  # Source IP comes first after TTL
+        dst_ip = data[6:10]  # Destination IP comes second
         
-        return data[10:]  # Adjust based on header length
+        # Debug print with correct byte order
+        print(f"Network packet received:")
+        print(f"  - Version: IPv{version}")
+        print(f"  - Source IP: {'.'.join(str(b) for b in src_ip)}")
+        print(f"  - Destination IP: {'.'.join(str(b) for b in dst_ip)}")
+        
+        # Verify destination IP matches our IP
+        if dst_ip != self.src_ip:
+            print(f"IP address mismatch:")
+            print(f"  - Received: {'.'.join(str(b) for b in dst_ip)}")
+            print(f"  - Expected: {'.'.join(str(b) for b in self.src_ip)}")
+            return b''
+            
+        return data[10:]  # Return payload after header
 
 class TransportLayer(Layer):
     """Layer 4: Transport Layer
@@ -550,9 +611,9 @@ class ApplicationLayer(Layer):
 def create_server():
     """Create and configure server-side layers"""
     physical = PhysicalLayer('localhost', 12345, is_server=True)
-    # Fix MAC addresses to use proper hex values
-    datalink = DataLinkLayer(b'\x11\x22\x33\x44\x55\x66', b'\x77\x88\x99\xaa\xbb\xcc')
-    network = NetworkLayer(b'\x0a\x00\x00\x01', b'\x0a\x00\x00\x02')
+    
+    datalink = DataLinkLayer(SERVER_MAC, CLIENT_MAC)
+    network = NetworkLayer(SERVER_IP, CLIENT_IP)
     transport = TransportLayer()
     session = SessionLayer(1234)
     presentation = PresentationLayer(b'secret')
@@ -577,9 +638,14 @@ def create_server():
 def create_client():
     """Create and configure client-side layers"""
     physical = PhysicalLayer('localhost', 12345, is_server=False)
-    # Fix MAC addresses to use proper hex values (reversed from server)
-    datalink = DataLinkLayer(b'\x77\x88\x99\xaa\xbb\xcc', b'\x11\x22\x33\x44\x55\x66')
-    network = NetworkLayer(b'\x0a\x00\x00\x02', b'\x0a\x00\x00\x01')
+
+
+    print("\nClient Configuration:")
+    print(f"MAC Address: {':'.join(f'{b:02x}' for b in CLIENT_MAC)}")
+    print(f"IP Address: {'.'.join(str(b) for b in CLIENT_IP)}")
+
+    datalink = DataLinkLayer(CLIENT_MAC, SERVER_MAC)
+    network = NetworkLayer(CLIENT_IP, SERVER_IP)
     transport = TransportLayer()
     session = SessionLayer(1234)
     presentation = PresentationLayer(b'secret')
@@ -618,6 +684,7 @@ def main():
 
     try:
         # Create and start server
+        initialize_addresses()
         print("\n=== Starting Server ===")
         server, server_app = create_server()
         
