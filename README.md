@@ -47,7 +47,7 @@ cd osi-model
 
 Run the program:
 ```bash
-python osi.py
+python3 main.py or python main.py
 ```
 
 The program will:
