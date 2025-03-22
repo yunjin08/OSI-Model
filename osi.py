@@ -6,47 +6,66 @@ from threading import Thread, Event
 import signal
 import sys
 import random
+import uuid
+
 
 SERVER_MAC = None
 CLIENT_MAC = None
 SERVER_IP = None
 CLIENT_IP = None
 
-def generate_random_mac():
-    """Generate a random MAC address"""
-    mac = bytes([random.randint(0, 255) for _ in range(6)])
-    # Set locally administered bit
-    mac = bytes([mac[0] | 0x02]) + mac[1:]
-    return mac
+def get_local_mac_address():
+    mac_int = uuid.getnode()
+    # Convert MAC from integer to bytes (6 bytes for MAC address)
+    mac_bytes = mac_int.to_bytes(6, byteorder='big')
+    return mac_bytes
 
-def generate_random_ip():
-    """Generate a random IP address in private network ranges"""
-    range_choice = random.randint(1, 3)
-    
-    if range_choice == 1:
-        return bytes([10, random.randint(0, 255), random.randint(0, 255), random.randint(1, 254)])
-    elif range_choice == 2:
-        return bytes([172, random.randint(16, 31), random.randint(0, 255), random.randint(1, 254)])
-    else:
-        return bytes([192, 168, random.randint(0, 255), random.randint(1, 254)])
-    
+def get_local_ip_address():
+    """Get IP address without using netifaces"""
+    try:
+        # Create a socket to determine local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # No need for the connection to succeed, just to determine IP
+        s.connect(("8.8.8.8", 80))
+        ip_addr = s.getsockname()[0]
+        s.close()
+        # Convert from string format to bytes
+        ip_bytes = bytes([int(x) for x in ip_addr.split('.')])
+        return ip_bytes
+    except Exception:
+        print("Warning: Could not determine local IP address, using default")
+        # Fallback to a private IP address
+        return bytes([192, 168, 0, 1])
+
 def initialize_addresses():
-    """Initialize global MAC and IP addresses"""
+    """Initialize global MAC and IP addresses with real device information"""
     global SERVER_MAC, CLIENT_MAC, SERVER_IP, CLIENT_IP
     
-    # Generate random MAC addresses
-    SERVER_MAC = generate_random_mac()
-    CLIENT_MAC = generate_random_mac()
+    # Get real MAC and IP addresses
+    local_mac = get_local_mac_address()
+    local_ip = get_local_ip_address()
     
-    # Generate random IP addresses
-    SERVER_IP = generate_random_ip()
-    CLIENT_IP = generate_random_ip()
+    # For server
+    SERVER_MAC = local_mac
+    SERVER_IP = local_ip
     
-    print("\nGenerated Addresses:")
+    # For client (in a real setup, these would be different)
+    # Here we're simulating a client with modified addresses based on real ones
+    CLIENT_MAC = bytes([local_mac[0] | 0x02]) + local_mac[1:]  # Modified MAC
+    
+    # Generate a different but valid IP in the same subnet
+    subnet_mask = 24  # Assuming a /24 subnet
+    subnet_prefix = local_ip[:3]  # First 3 bytes for /24 subnet
+    client_host = (local_ip[3] % 254) + 1  # Ensure it's different from server
+    if client_host == local_ip[3]:  # Avoid duplicate IP
+        client_host = (client_host % 254) + 1
+    CLIENT_IP = subnet_prefix + bytes([client_host])
+    
+    print("\nReal Device Network Information:")
     print(f"Server MAC: {':'.join(f'{b:02x}' for b in SERVER_MAC)}")
     print(f"Server IP: {'.'.join(str(b) for b in SERVER_IP)}")
-    print(f"Client MAC: {':'.join(f'{b:02x}' for b in CLIENT_MAC)}")
-    print(f"Client IP: {'.'.join(str(b) for b in CLIENT_IP)}")
+    print(f"Client MAC (derived): {':'.join(f'{b:02x}' for b in CLIENT_MAC)}")
+    print(f"Client IP (derived): {'.'.join(str(b) for b in CLIENT_IP)}")
 
 class Layer:
     """Base class for all OSI layers"""
@@ -639,7 +658,6 @@ def create_client():
     """Create and configure client-side layers"""
     physical = PhysicalLayer('localhost', 12345, is_server=False)
 
-
     print("\nClient Configuration:")
     print(f"MAC Address: {':'.join(f'{b:02x}' for b in CLIENT_MAC)}")
     print(f"IP Address: {'.'.join(str(b) for b in CLIENT_IP)}")
@@ -683,7 +701,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        # Create and start server
+        # Get real network addresses
         initialize_addresses()
         print("\n=== Starting Server ===")
         server, server_app = create_server()
